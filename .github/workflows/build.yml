@@ -1,0 +1,73 @@
+name: Build DevisBTP
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Generate icon (Windows .ico)
+        run: |
+          python generate_icon.py
+          # convertir PNG en ICO avec Pillow
+          python -c "from PIL import Image; img = Image.open('logo.png'); img.save('logo.ico', format='ICO', sizes=[(256,256)])"
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name DevisBTP --icon=logo.ico run.py
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevisBTP-Windows
+          path: dist/DevisBTP.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Generate icon (PNG)
+        run: python generate_icon.py
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --name DevisBTP run.py
+      - name: Create .desktop launcher
+        run: |
+          mkdir -p DevisBTP.AppDir
+          cp dist/DevisBTP DevisBTP.AppDir/
+          cp logo.png DevisBTP.AppDir/
+          cat > DevisBTP.AppDir/devisbtp.desktop << EOF
+          [Desktop Entry]
+          Version=1.0
+          Type=Application
+          Name=DevisBTP
+          Comment=Logiciel de devis Génie Civil
+          Exec=DevisBTP
+          Icon=logo.png
+          Terminal=false
+          Categories=Office;Finance;
+          EOF
+          chmod +x DevisBTP.AppDir/DevisBTP
+      - name: Upload artifact (Linux binary)
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevisBTP-Linux
+          path: DevisBTP.AppDir/
