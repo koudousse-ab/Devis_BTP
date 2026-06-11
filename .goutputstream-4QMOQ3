@@ -1,0 +1,350 @@
+"""
+pdf_gen.py  —  Générateur PDF Devis BTP (en-tête personnalisé)
+"""
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm, mm
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                 TableStyle, HRFlowable, Image, KeepTogether)
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.pdfgen import canvas
+import os
+from pathlib import Path
+from datetime import datetime
+from PIL import Image as PILImage  # pour redimensionner le logo
+
+# Palette
+BLEU_FONCE  = colors.HexColor("#0D47A1")
+BLEU_MED    = colors.HexColor("#1565C0")
+BLEU_CLAIR  = colors.HexColor("#1976D2")
+BLEU_TBL    = colors.HexColor("#E3F2FD")
+BLEU_LIGNE  = colors.HexColor("#BBDEFB")
+ORANGE      = colors.HexColor("#E65100")
+BLANC       = colors.white
+NOIR        = colors.HexColor("#212121")
+GRIS_TEXTE  = colors.HexColor("#546E7A")
+GRIS_BORD   = colors.HexColor("#90CAF9")
+GRIS_FOND   = colors.HexColor("#F8FBFF")
+
+def fmt(v, dec=0):
+    try: return f"{int(round(float(v))):,}".replace(",", " ")
+    except: return "0"
+
+def fmt_fcfa(v):
+    return fmt(v) + " FCFA"
+
+def fdate(d):
+    try: return datetime.strptime(str(d), "%Y-%m-%d").strftime("%d/%m/%Y")
+    except: return str(d) if d else "—"
+
+class PageCanvas(canvas.Canvas):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._pages = []
+    def showPage(self):
+        self._pages.append(dict(self.__dict__))
+        self._startPage()
+    def save(self):
+        n = len(self._pages)
+        for state in self._pages:
+            self.__dict__.update(state)
+            self._footer(self._pageNumber, n)
+            super().showPage()
+        super().save()
+    def _footer(self, page, total):
+        self.saveState()
+        W, H = A4
+        self.setStrokeColor(BLEU_MED)
+        self.setLineWidth(1.5)
+        self.line(1.5*cm, 2.0*cm, W-1.5*cm, 2.0*cm)
+        self.setFont("Helvetica", 7)
+        self.setFillColor(GRIS_TEXTE)
+        self.drawString(1.5*cm, 1.5*cm, "Document généré par DevisBTP  •  Togo")
+        self.drawCentredString(W/2, 1.5*cm, "Ce devis est valable jusqu'à la date indiquée — TVA incluse au taux légal")
+        self.drawRightString(W-1.5*cm, 1.5*cm, f"Page {page} / {total}")
+        self.restoreState()
+
+def S(name, **kw):
+    return ParagraphStyle(name, **kw)
+
+def make_styles():
+    return {
+        'ent_nom'  : S("en", fontName="Helvetica-Bold",   fontSize=16, textColor=BLEU_FONCE, leading=20),
+        'ent_slogan': S("es", fontName="Helvetica-Oblique",fontSize=9,  textColor=GRIS_TEXTE, leading=12),
+        'ent_info' : S("ei", fontName="Helvetica",        fontSize=8, textColor=GRIS_TEXTE, leading=11),
+        'devis_titre': S("dt", fontName="Helvetica-Bold",   fontSize=14, textColor=BLEU_FONCE, leading=18, alignment=TA_CENTER),
+        'devis_num' : S("dn", fontName="Helvetica",        fontSize=9, textColor=GRIS_TEXTE, alignment=TA_RIGHT),
+        'tbl_hdr'  : S("th", fontName="Helvetica-Bold",   fontSize=8, textColor=BLANC,      leading=10, alignment=TA_CENTER),
+        'tbl_hdr_l': S("thl",fontName="Helvetica-Bold",   fontSize=8, textColor=BLANC,      leading=10),
+        'tbl_sec'  : S("ts", fontName="Helvetica-Bold",   fontSize=8.5,textColor=BLANC,      leading=11),
+        'tbl_item' : S("ti", fontName="Helvetica",        fontSize=7.5,textColor=NOIR,       leading=10),
+        'tbl_item_r':S("tir",fontName="Helvetica",        fontSize=7.5,textColor=NOIR,       leading=10, alignment=TA_RIGHT),
+        'tbl_item_c':S("tic",fontName="Helvetica",        fontSize=7.5,textColor=NOIR,       leading=10, alignment=TA_CENTER),
+        'tbl_sub'  : S("tsb",fontName="Helvetica-Bold",   fontSize=8, textColor=BLEU_FONCE,  leading=10),
+        'tbl_sub_r': S("tsr",fontName="Helvetica-Bold",   fontSize=8, textColor=BLEU_FONCE,  leading=10, alignment=TA_RIGHT),
+        'tbl_cmt'  : S("tc", fontName="Helvetica-Oblique",fontSize=7,  textColor=GRIS_TEXTE, leading=9),
+        'tot_lbl'  : S("tl", fontName="Helvetica-Bold",   fontSize=9, textColor=GRIS_TEXTE,  leading=12, alignment=TA_RIGHT),
+        'tot_val'  : S("tv", fontName="Helvetica",        fontSize=9, textColor=NOIR,        leading=12, alignment=TA_RIGHT),
+        'ttc_lbl'  : S("ttl",fontName="Helvetica-Bold",   fontSize=11, textColor=BLANC,      leading=14, alignment=TA_RIGHT),
+        'ttc_val'  : S("ttv",fontName="Helvetica-Bold",   fontSize=11, textColor=BLANC,      leading=14, alignment=TA_RIGHT),
+        'cond_hdr' : S("ch", fontName="Helvetica-Bold",   fontSize=8,  textColor=BLEU_MED,   leading=11),
+        'cond_val' : S("cv", fontName="Helvetica",        fontSize=7.5,textColor=NOIR,       leading=10),
+        'sig_hdr'  : S("sh", fontName="Helvetica-Bold",   fontSize=8, textColor=BLANC,       leading=10, alignment=TA_CENTER),
+        'sig_txt'  : S("st", fontName="Helvetica",        fontSize=7,  textColor=GRIS_TEXTE, leading=9, alignment=TA_CENTER),
+    }
+
+def generate_devis_pdf(devis, lignes, entreprise, output_path):
+    W_PAGE, H_PAGE = A4
+    MARGIN = 1.5*cm
+    W = W_PAGE - 2*MARGIN
+
+    doc = SimpleDocTemplate(
+        output_path, pagesize=A4,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=1.5*cm, bottomMargin=2.8*cm,
+        title=f"Devis {devis.get('numero','')}"
+    )
+    ST = make_styles()
+    story = []
+    ent = entreprise
+
+    # ---------- Logo redimensionné (largeur 5 cm) ----------
+    logo_img = None
+    lp = ent.get("logo_path", "")
+    if lp and os.path.exists(lp):
+        try:
+            img = PILImage.open(lp)
+            target_width = 5*cm
+            w_percent = target_width / img.width
+            target_height = img.height * w_percent
+            img = img.resize((int(target_width), int(target_height)), PILImage.Resampling.LANCZOS)
+            logo_img = Image(img)
+        except:
+            pass
+
+    def ent_block():
+        b = []
+        nom = ent.get("nom", "") or "Entreprise"
+        b.append(Paragraph(nom, ST['ent_nom']))
+        slogan = ent.get("slogan", "")
+        if slogan:
+            b.append(Paragraph(slogan, ST['ent_slogan']))
+        b.append(Spacer(1, 2*mm))
+        adr = " · ".join(filter(None, [ent.get("adresse",""), ent.get("quartier",""),
+                                        ent.get("ville",""), ent.get("pays","")]))
+        if adr:
+            b.append(Paragraph(adr, ST['ent_info']))
+        tels = " / ".join(filter(None, [ent.get("telephone1",""), ent.get("telephone2","")]))
+        if tels:
+            b.append(Paragraph(f"Tél : {tels}", ST['ent_info']))
+        if ent.get("email"):
+            b.append(Paragraph(f"Email : {ent['email']}", ST['ent_info']))
+        if ent.get("site_web"):
+            b.append(Paragraph(f"Web : {ent['site_web']}", ST['ent_info']))
+        return b
+
+    num_text = Paragraph(f"N° DEVIS : {devis.get('numero','')}", ST['devis_num'])
+    if logo_img:
+        hdr_data = [[logo_img, ent_block(), num_text]]
+        hdr_cols = [5*cm + 0.2*cm, W - 5*cm - 3*cm - 0.4*cm, 3*cm]
+    else:
+        hdr_data = [[ent_block(), num_text]]
+        hdr_cols = [W - 3*cm - 0.2*cm, 3*cm]
+    hdr_table = Table(hdr_data, colWidths=hdr_cols)
+    hdr_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+        ('RIGHTPADDING', (0,0), (-1,-1), 0),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+    ]))
+    story.append(hdr_table)
+    story.append(Spacer(1, 3*mm))
+
+    story.append(Paragraph("DEVIS QUANTITATIF ET ESTIMATIF", ST['devis_titre']))
+    story.append(Spacer(1, 5*mm))
+
+    # ---------- TABLEAU 5 colonnes ----------
+    CW5 = [8*cm, 1.3*cm, 1.4*cm, 2.3*cm, 2.3*cm]
+    hdr_row = [
+        Paragraph("Désignation", ST['tbl_hdr_l']),
+        Paragraph("U", ST['tbl_hdr']),
+        Paragraph("Qté", ST['tbl_hdr']),
+        Paragraph("Prix Unitaire", ST['tbl_hdr']),
+        Paragraph("Montant", ST['tbl_hdr']),
+    ]
+    tdata = [hdr_row]
+    tstyle = [
+        ('BACKGROUND', (0,0), (-1,0), BLEU_FONCE),
+        ('TEXTCOLOR', (0,0), (-1,0), BLANC),
+        ('LINEBELOW', (0,0), (-1,0), 1.5, BLEU_MED),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('LEFTPADDING', (0,0), (-1,-1), 4),
+        ('RIGHTPADDING', (0,0), (-1,-1), 4),
+        ('ALIGN', (1,1), (2,-1), 'CENTER'),
+        ('ALIGN', (3,1), (4,-1), 'RIGHT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('LINEBELOW', (0,1), (-1,-1), 0.3, BLEU_LIGNE),
+        ('LINEBEFORE', (1,0), (1,-1), 0.3, BLEU_LIGNE),
+        ('LINEBEFORE', (2,0), (2,-1), 0.3, BLEU_LIGNE),
+        ('LINEBEFORE', (3,0), (3,-1), 0.3, BLEU_LIGNE),
+        ('LINEBEFORE', (4,0), (4,-1), 0.3, BLEU_LIGNE),
+        ('BOX', (0,0), (-1,-1), 1.2, BLEU_MED),
+    ]
+    sec_num = 0
+    item_num = 0
+    for l in lignes:
+        tl = l.get('type_ligne', 'item')
+        mont = float(l.get('montant', 0) or 0)
+        if tl == 'section':
+            sec_num += 1
+            item_num = 0
+            tdata.append([
+                Paragraph(l.get('designation', '').upper(), ST['tbl_sec']),
+                "", "", "", ""
+            ])
+            tstyle.append(('BACKGROUND', (0, len(tdata)-1), (-1, len(tdata)-1), BLEU_MED))
+            tstyle.append(('SPAN', (0, len(tdata)-1), (4, len(tdata)-1)))
+            tstyle.append(('LINEABOVE', (0, len(tdata)-1), (-1, len(tdata)-1), 0.8, BLEU_FONCE))
+        elif tl == 'subtotal':
+            tdata.append([
+                Paragraph(l.get('designation', 'Sous-total'), ST['tbl_sub']),
+                "", "",
+                Paragraph("Sous-total :", ST['tbl_sub_r']),
+                Paragraph(fmt(mont), ST['tbl_sub_r'])
+            ])
+            tstyle.append(('BACKGROUND', (0, len(tdata)-1), (-1, len(tdata)-1), BLEU_TBL))
+            tstyle.append(('LINEABOVE', (0, len(tdata)-1), (-1, len(tdata)-1), 1, BLEU_MED))
+            tstyle.append(('LINEBELOW', (0, len(tdata)-1), (-1, len(tdata)-1), 1, BLEU_MED))
+            tstyle.append(('SPAN', (3, len(tdata)-1), (3, len(tdata)-1)))
+        elif tl == 'comment':
+            tdata.append([
+                Paragraph(f"↳ {l.get('designation', '')}", ST['tbl_cmt']),
+                "", "", "", ""
+            ])
+            tstyle.append(('SPAN', (0, len(tdata)-1), (4, len(tdata)-1)))
+            tstyle.append(('BACKGROUND', (0, len(tdata)-1), (-1, len(tdata)-1), BLANC))
+        else:
+            item_num += 1
+            designation = l.get('designation', '')
+            unite = l.get('unite', '')
+            qte = float(l.get('quantite', 0) or 0)
+            pu = float(l.get('prix_unitaire', 0) or 0)
+            qte_str = str(int(qte)) if qte == int(qte) else f"{qte:.2f}"
+            tdata.append([
+                Paragraph(designation, ST['tbl_item']),
+                Paragraph(unite, ST['tbl_item_c']),
+                Paragraph(qte_str, ST['tbl_item_c']),
+                Paragraph(fmt(pu), ST['tbl_item_r']),
+                Paragraph(fmt(mont), ST['tbl_item_r']),
+            ])
+            bg = BLANC if item_num % 2 else BLEU_TBL
+            tstyle.append(('BACKGROUND', (0, len(tdata)-1), (-1, len(tdata)-1), bg))
+    tbl = Table(tdata, colWidths=CW5, repeatRows=1)
+    tbl.setStyle(TableStyle(tstyle))
+    story.append(tbl)
+    story.append(Spacer(1, 5*mm))
+
+    # ---------- TOTAUX ----------
+    ht = float(devis.get('montant_ht', 0) or 0)
+    tva_t = float(devis.get('tva_taux', 0) or 0)
+    tva = float(devis.get('montant_tva', 0) or 0)
+    ttc = float(devis.get('montant_ttc', 0) or 0)
+
+    tot_data = [
+        [Paragraph("Montant Hors Taxes (HT) :", ST['tot_lbl']), Paragraph(fmt_fcfa(ht), ST['tot_val'])],
+        [Paragraph(f"TVA ({tva_t:.0f}%) :", ST['tot_lbl']), Paragraph(fmt_fcfa(tva), ST['tot_val'])],
+        [Paragraph("MONTANT TOTAL TTC :", ST['ttc_lbl']), Paragraph(fmt_fcfa(ttc), ST['ttc_val'])],
+    ]
+    tot_t = Table(tot_data, colWidths=[5*cm, 4.2*cm])
+    tot_t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,1), GRIS_FOND),
+        ('BACKGROUND', (0,2), (-1,2), BLEU_MED),
+        ('LINEABOVE', (0,2), (-1,2), 2, BLEU_FONCE),
+        ('LINEBELOW', (0,1), (-1,1), 0.5, BLEU_LIGNE),
+        ('BOX', (0,0), (-1,-1), 1.2, BLEU_MED),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('LEFTPADDING', (0,0), (-1,-1), 8),
+        ('RIGHTPADDING', (0,0), (-1,-1), 8),
+        ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+        ('ROUNDEDCORNERS', [2]),
+    ]))
+    align_row = Table([[Spacer(W-9.5*cm, 1), tot_t]], colWidths=[W-9.5*cm, 9.5*cm])
+    align_row.setStyle(TableStyle([('LEFTPADDING', (0,0), (-1,-1), 0), ('RIGHTPADDING', (0,0), (-1,-1), 0)]))
+    story.append(align_row)
+    story.append(Spacer(1, 5*mm))
+
+    # ---------- CONDITIONS ET SIGNATURES (sans débordement) ----------
+    cond = devis.get('conditions_reglement', '') or ent.get('conditions_def', '') or ''
+    notes = devis.get('notes', '') or ''
+    delai = devis.get('delai_execution', '') or ''
+    banque = ent.get('banque', '') or ''
+    rib = ent.get('rib', '') or ''
+
+    left_elements = []
+    if cond:
+        left_elements.append(Paragraph("CONDITIONS DE RÈGLEMENT", ST['cond_hdr']))
+        left_elements.append(Paragraph(cond, ST['cond_val']))
+        left_elements.append(Spacer(1, 2*mm))
+    if delai:
+        left_elements.append(Paragraph("DÉLAI D'EXÉCUTION", ST['cond_hdr']))
+        left_elements.append(Paragraph(delai, ST['cond_val']))
+        left_elements.append(Spacer(1, 2*mm))
+    if banque or rib:
+        left_elements.append(Paragraph("COORDONNÉES BANCAIRES", ST['cond_hdr']))
+        if banque:
+            left_elements.append(Paragraph(f"Banque : {banque}", ST['cond_val']))
+        if rib:
+            left_elements.append(Paragraph(f"RIB : {rib}", ST['cond_val']))
+        left_elements.append(Spacer(1, 2*mm))
+    if notes:
+        left_elements.append(Paragraph("NOTES", ST['cond_hdr']))
+        left_elements.append(Paragraph(notes, ST['cond_val']))
+    if not left_elements:
+        left_elements = [Spacer(1, 1)]
+
+    # Table des signatures
+    sig_data = [
+        [Paragraph("Signature & Cachet Entreprise", ST['sig_hdr']),
+         Paragraph("Bon pour Accord — Client", ST['sig_hdr'])],
+        [Spacer(1, 2.5*cm), Spacer(1, 2.5*cm)],
+        [Paragraph("Lu et approuvé — Date :", ST['sig_txt']),
+         Paragraph("Lu et approuvé — Date :", ST['sig_txt'])],
+        [Paragraph("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _", ST['sig_txt']),
+         Paragraph("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _", ST['sig_txt'])],
+    ]
+    left_width = 5.5*cm
+    space = 0.6*cm
+    sig_width = W - left_width - space
+    sig_t = Table(sig_data, colWidths=[sig_width/2, sig_width/2])
+    sig_t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (0,0), BLEU_MED),
+        ('BACKGROUND', (1,0), (1,0), BLEU_CLAIR),
+        ('BOX', (0,0), (0,-1), 1, BLEU_LIGNE),
+        ('BOX', (1,0), (1,-1), 1, BLEU_LIGNE),
+        ('LINEBETWEEN', (0,0), (1,-1), 4, BLANC),
+        ('TOPPADDING', (0,0), (-1,-1), 5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('LEFTPADDING', (0,0), (-1,-1), 2),
+        ('RIGHTPADDING', (0,0), (-1,-1), 2),
+    ]))
+
+    bot_table = Table(
+        [[left_elements, Spacer(space, 1), sig_t]],
+        colWidths=[left_width, space, sig_width]
+    )
+    bot_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+        ('RIGHTPADDING', (0,0), (-1,-1), 0),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+    ]))
+    story.append(KeepTogether(bot_table))
+
+    doc.build(story, canvasmaker=PageCanvas)
+    return output_path
